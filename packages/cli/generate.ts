@@ -13,11 +13,12 @@ import { preserveWorkersSecretUpdatePositional } from "./generator/workers-secre
 import type { ForgeOpenApiDocument } from "./generator/openapi.js";
 
 const bundle = process.env.FORGE_OPENAPI_BUNDLE;
-// Bump this SHA to generate the commands from a new release.
+// Bump this SHA to generate the commands from a newer cloudflare/api-schemas commit.
 const FORGE_OPENAPI_VERSION = "ec5b5772f5cf7dfb16c49f3527671edfa37bb666";
 const FORGE_OPENAPI_RELEASE = `openapi@${FORGE_OPENAPI_VERSION}`;
-const FORGE_OPENAPI_ASSET = "openapi.forge.json";
-const FORGE_OPENAPI_ASSET_URL = `https://github.com/cloudflare/forge/releases/download/${FORGE_OPENAPI_RELEASE}/${FORGE_OPENAPI_ASSET}`;
+const FORGE_OPENAPI_ASSET = "openapi.json";
+const FORGE_OPENAPI_ASSET_URL = `https://raw.githubusercontent.com/cloudflare/api-schemas/${FORGE_OPENAPI_VERSION}/${FORGE_OPENAPI_ASSET}`;
+const COMBINED_METHODS = ["get", "put", "post", "delete", "patch"] as const;
 const HTTP_METHODS = [
 	"get",
 	"put",
@@ -85,6 +86,31 @@ function ignoreInvalidHiddenOperations(openapi: ForgeOpenApiDocument): void {
 				continue;
 			}
 
+			// Legacy v1 cloudforce-one/requests operations are marked x-forge-hidden
+			// instead of x-fern-ignore upstream, and share the cloudforce-one.requests
+			// group with v2.
+			if (
+				path === "/accounts/{account_id}/cloudforce-one/requests" ||
+				path.startsWith("/accounts/{account_id}/cloudforce-one/requests/")
+			) {
+				operation["x-fern-ignore"] = true;
+				const v2Path =
+					path === "/accounts/{account_id}/cloudforce-one/requests"
+						? "/accounts/{account_id}/cloudforce-one/v2/requests/{project_type}"
+						: path ===
+							  "/accounts/{account_id}/cloudforce-one/requests/{request_id}"
+							? "/accounts/{account_id}/cloudforce-one/v2/requests/{project_type}/{request_id}"
+							: undefined;
+				if (v2Path !== undefined) {
+					for (const v2Method of ["get", "post", "put"] as const) {
+						const v2Op = openapi.paths?.[v2Path]?.[v2Method];
+						if (v2Op && typeof v2Op.operationId === "string") {
+							v2Op["x-fern-sdk-method-name"] = v2Op.operationId;
+						}
+					}
+				}
+				continue;
+			}
 			const responseCodes = Object.keys(operation.responses ?? {});
 			const hasSuccessResponse = responseCodes.some(
 				(code) => code === "101" || code === "2XX" || /^2\d{2}$/.test(code)
@@ -97,6 +123,131 @@ function ignoreInvalidHiddenOperations(openapi: ForgeOpenApiDocument): void {
 			console.warn(
 				`[cf-generator] Ignoring hidden operation without a success response: ${method.toUpperCase()} ${path} (found: ${responseCodes.join(", ") || "none"})`
 			);
+		}
+	}
+}
+
+function rewriteAccountZoneDocumentation(value: unknown): unknown {
+	if (typeof value !== "string") {
+		return value;
+	}
+	return value
+		.replaceAll(" at the account level", "")
+		.replaceAll(/account/gi, "account or zone");
+}
+function combineAccountAndZoneRoutes(openapi: ForgeOpenApiDocument): void {
+	const documentPaths = openapi.paths;
+	if (!isRecord(documentPaths)) {
+		return;
+	}
+	const combinedName = "account_or_zone";
+	const pathNames = Object.keys(documentPaths);
+	const accountPaths = pathNames.filter((path) =>
+		path.startsWith("/accounts/")
+	);
+	const zonePaths = pathNames.filter((path) => path.startsWith("/zones/"));
+
+	for (const accountPath of accountPaths) {
+		const sharedSubpath = accountPath.split("/").slice(3).join("/");
+		if (!sharedSubpath) {
+			continue;
+		}
+		const zonePath = zonePaths.find(
+			(candidate) => candidate.split("/").slice(3).join("/") === sharedSubpath
+		);
+		if (zonePath === undefined) {
+			continue;
+		}
+		const accountItem = documentPaths[accountPath];
+		const zoneItem = documentPaths[zonePath];
+		if (!isRecord(accountItem) || !isRecord(zoneItem)) {
+			continue;
+		}
+		const accountSegments = accountPath.split("/");
+		const accountId = accountSegments[2]?.slice(1, -1);
+		const combinedPath = `/{${combinedName}}/{account_or_zone_id}/${sharedSubpath}`;
+		const combinedItem = structuredClone(accountItem);
+
+		const renameParams = (parameters: unknown) => {
+			if (!Array.isArray(parameters) || accountId === undefined) {
+				return;
+			}
+			for (const [index, parameter] of parameters.entries()) {
+				if (!isRecord(parameter)) {
+					continue;
+				}
+				const resolved = resolveLocalParameter(openapi, parameter) ?? parameter;
+				if (resolved["name"] !== accountId || resolved["in"] !== "path") {
+					continue;
+				}
+				const renamed =
+					resolved === parameter ? parameter : structuredClone(resolved);
+				renamed["name"] = "account_or_zone_id";
+				renamed["description"] =
+					`The account ID or zone ID, as selected by ${combinedName}.`;
+				parameters[index] = renamed;
+			}
+		};
+
+		renameParams(combinedItem["parameters"]);
+		for (const method of COMBINED_METHODS) {
+			const operation = combinedItem[method];
+			if (!isRecord(operation)) {
+				continue;
+			}
+			if (typeof operation["description"] === "string") {
+				operation["description"] = rewriteAccountZoneDocumentation(
+					operation["description"]
+				);
+			}
+			if (typeof operation["summary"] === "string") {
+				operation["summary"] = rewriteAccountZoneDocumentation(
+					operation["summary"]
+				);
+			}
+			operation["tags"] = [];
+			const parameters = Array.isArray(operation["parameters"])
+				? operation["parameters"]
+				: [];
+			renameParams(parameters);
+			parameters.unshift({
+				name: combinedName,
+				in: "path",
+				description:
+					"Whether account_or_zone_id is an account ID (`accounts`) or a zone ID (`zones`).",
+				schema: { type: "string", enum: ["accounts", "zones"] },
+				required: true,
+				allowEmptyValue: false,
+			});
+			operation["parameters"] = parameters;
+			delete operation["operationId"];
+			if (isRecord(operation["responses"])) {
+				for (const response of Object.values(operation["responses"])) {
+					if (
+						isRecord(response) &&
+						typeof response["description"] === "string"
+					) {
+						response["description"] = rewriteAccountZoneDocumentation(
+							response["description"]
+						);
+					}
+				}
+			}
+		}
+
+		documentPaths[combinedPath] =
+			combinedItem as ForgeOpenApiDocument["paths"][string];
+		for (const method of COMBINED_METHODS) {
+			if (isRecord(combinedItem[method])) {
+				delete accountItem[method];
+				delete zoneItem[method];
+			}
+		}
+		if (!COMBINED_METHODS.some((method) => isRecord(accountItem[method]))) {
+			delete documentPaths[accountPath];
+		}
+		if (!COMBINED_METHODS.some((method) => isRecord(zoneItem[method]))) {
+			delete documentPaths[zonePath];
 		}
 	}
 }
@@ -117,6 +268,7 @@ function ignoreInvalidHiddenOperations(openapi: ForgeOpenApiDocument): void {
  * default, zones when --zone is explicitly supplied).
  */
 function prepareAccountOrZoneOperations(openapi: ForgeOpenApiDocument): void {
+	combineAccountAndZoneRoutes(openapi);
 	let operationCount = 0;
 	let commandCount = 0;
 	let parameterCount = 0;
