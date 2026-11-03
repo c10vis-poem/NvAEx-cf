@@ -550,7 +550,7 @@ export const generatedCommands: GeneratedCommand[] = [
 			() => import("./iam/index.js"),
 			null
 		),
-		hideCommand: true,
+		hideCommand: false,
 	},
 	{
 		command: lazyCommand<CommonYargsOptions>(
@@ -752,27 +752,9 @@ export const generatedCommands: GeneratedCommand[] = [
 	},
 	{
 		command: lazyCommand<CommonYargsOptions>(
-			"organization",
-			"organization",
-			() => import("./organization/index.js"),
-			null
-		),
-		hideCommand: false,
-	},
-	{
-		command: lazyCommand<CommonYargsOptions>(
 			"organizations",
 			"Multi-user organizations that group accounts, members, and shared settings under a single entity",
 			() => import("./organizations/index.js"),
-			null
-		),
-		hideCommand: false,
-	},
-	{
-		command: lazyCommand<CommonYargsOptions>(
-			"origin-post-quantum-encryption",
-			"Enable post-quantum key exchange for connections between Cloudflare and your origin server",
-			() => import("./origin-post-quantum-encryption/index.js"),
 			null
 		),
 		hideCommand: false,
@@ -924,7 +906,7 @@ export const generatedCommands: GeneratedCommand[] = [
 	{
 		command: lazyCommand<CommonYargsOptions>(
 			"resource-sharing",
-			"Share Cloudflare resources (zones, accounts) across organizations with granular access controls",
+			"Share account-level resources (WAF custom rulesets, Gateway policies and settings, Access IdP federation grants) with other accounts in the same organization",
 			() => import("./resource-sharing/index.js"),
 			null
 		),
@@ -964,7 +946,7 @@ export const generatedCommands: GeneratedCommand[] = [
 			() => import("./scim/index.js"),
 			null
 		),
-		hideCommand: true,
+		hideCommand: false,
 	},
 	{
 		command: lazyCommand<CommonYargsOptions>(
@@ -1079,6 +1061,15 @@ export const generatedCommands: GeneratedCommand[] = [
 			"tenant-custom-nameservers",
 			"tenant-custom-nameservers",
 			() => import("./tenant-custom-nameservers/index.js"),
+			null
+		),
+		hideCommand: false,
+	},
+	{
+		command: lazyCommand<CommonYargsOptions>(
+			"tenants",
+			"Multi-tenant account management",
+			() => import("./tenants/index.js"),
 			null
 		),
 		hideCommand: false,
